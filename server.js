@@ -68,7 +68,7 @@ function verifyToken(req, res, next) {
     next();
 }
 
-// 3. Streaming Proxy (Keeps the Dropbox URL completely off the client)
+// 3. Chunked Streaming Proxy (Keeps Dropbox URL completely hidden, fixes Vercel buffering)
 function proxyRequest(req, res, targetUrl) {
     const urlObj = new URL(targetUrl);
     const headers = { ...req.headers };
@@ -77,6 +77,28 @@ function proxyRequest(req, res, targetUrl) {
     delete headers.host;
     delete headers.cookie;
     delete headers.referer;
+    
+    // --- VERCEL/RENDER BUFFERING FIX ---
+    // Instead of streaming the entire file in one go (which hits serverless timeouts
+    // and memory limits causing huge buffering), we force chunked Range requests.
+    // We cap each chunk to 3MB. The browser will automatically request the next chunk.
+    const CHUNK_SIZE = 3 * 1024 * 1024; // 3MB
+    
+    let range = headers.range;
+    if (range) {
+        const parts = range.replace(/bytes=/, "").split("-");
+        const start = parseInt(parts[0], 10);
+        let end = parts[1] ? parseInt(parts[1], 10) : start + CHUNK_SIZE - 1;
+        
+        // Cap the chunk size
+        if (end - start + 1 > CHUNK_SIZE) {
+            end = start + CHUNK_SIZE - 1;
+        }
+        headers.range = `bytes=${start}-${end}`;
+    } else {
+        // If no range is provided, force a small range to prevent full download
+        headers.range = `bytes=0-${CHUNK_SIZE - 1}`;
+    }
     
     const options = { headers: { ...headers, host: urlObj.host } };
     
@@ -95,15 +117,12 @@ function proxyRequest(req, res, targetUrl) {
         
         // IMPORTANT: We must preserve the original Content-Type (video/mp4) 
         // otherwise the HTML5 <video> player will buffer forever!
-        
         res.writeHead(proxyRes.statusCode, resHeaders);
         proxyRes.pipe(res); // Stream directly to client
     }).on('error', (err) => {
         console.error('Proxy Error:', err.message);
         if (!res.headersSent) res.status(500).send('Proxy Error');
     });
-    
-    // We do NOT pipe req to proxyReq here because https.get() automatically ends the request.
 }
 
 // Attach strict middleware to all media endpoints
