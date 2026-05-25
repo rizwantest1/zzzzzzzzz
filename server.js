@@ -58,9 +58,9 @@ function verifyToken(req, res, next) {
     // IP AND USER-AGENT VALIDATION
     const tokenData = validTokens.get(token);
     const currentIp = req.ip || req.socket.remoteAddress;
-    const currentUserAgent = req.headers['user-agent'] || 'unknown';
     
-    if (tokenData.ip !== currentIp || tokenData.userAgent !== currentUserAgent) {
+    // We only validate IP because User-Agent changes depending on if it's a fetch() or a <video> stream (e.g. AppleCoreMedia)
+    if (tokenData.ip !== currentIp) {
         console.log(`Blocked token theft attempt! Expected IP: ${tokenData.ip}, Got: ${currentIp}`);
         return res.status(403).send('Session mismatch. Token cannot be used externally.');
     }
@@ -90,10 +90,11 @@ function proxyRequest(req, res, targetUrl) {
         // Remove CORS headers so no other website can request this stream
         delete resHeaders['access-control-allow-origin'];
         
-        // Anti-IDM: Remove content disposition and change content type 
-        // to prevent IDM from recognizing it as a downloadable media file.
+        // Remove content-disposition so the browser doesn't try to download it
         delete resHeaders['content-disposition'];
-        resHeaders['content-type'] = 'application/octet-stream';
+        
+        // IMPORTANT: We must preserve the original Content-Type (video/mp4) 
+        // otherwise the HTML5 <video> player will buffer forever!
         
         res.writeHead(proxyRes.statusCode, resHeaders);
         proxyRes.pipe(res); // Stream directly to client
@@ -102,8 +103,7 @@ function proxyRequest(req, res, targetUrl) {
         if (!res.headersSent) res.status(500).send('Proxy Error');
     });
     
-    // Pipe the client's request (including Range requests for seeking) to Dropbox
-    req.pipe(proxyReq);
+    // We do NOT pipe req to proxyReq here because https.get() automatically ends the request.
 }
 
 // Attach strict middleware to all media endpoints
